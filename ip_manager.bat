@@ -164,9 +164,107 @@ goto :EOF
 
 
 :: ============================================================
-:: 3. IP設定復元  ※ feature/ip-restore で実装
+:: 3. IP設定復元
+::   バックアップ .cfg ファイルから静的 IP 設定を復元する。
+::   復元後は必ず手動 (静的 IP) 設定として適用される。
 :: ============================================================
 :RESTORE_IP
 echo.
-echo [未実装] IP 設定復元機能は feature/ip-restore で実装されます。
+echo ---- IP 設定復元 ----
+echo.
+
+if not exist "!CONFIG_FILE!" (
+    echo バックアップファイルが見つかりません。
+    echo 場所: !CONFIG_FILE!
+    echo.
+    echo まず「1. IP 設定のバックアップ」を実行してください。
+    goto :EOF
+)
+
+:: --- バックアップファイルを読み込む
+::     "KEY=VALUE" 形式を KEY 変数に代入する
+set "BACKUP_DATE="
+set "BACKUP_TIME="
+set "NIC="
+set "IP_ADDR="
+set "IP_MASK="
+set "IP_GW="
+set "IP_DNS1="
+set "IP_DNS2="
+set "IP_DHCP="
+
+for /f "usebackq tokens=1,* delims==" %%a in ("!CONFIG_FILE!") do (
+    set "%%a=%%b"
+)
+
+:: --- バックアップ内容を表示
+echo バックアップ情報:
+echo   バックアップ日時  : !BACKUP_DATE! !BACKUP_TIME!
+echo   NIC               : !NIC!
+echo   IP アドレス       : !IP_ADDR!
+echo   サブネットマスク  : !IP_MASK!
+echo   ゲートウェイ      : !IP_GW!
+if not "!IP_DNS1!"=="" echo   DNS サーバー 1    : !IP_DNS1!
+if not "!IP_DNS2!"=="" echo   DNS サーバー 2    : !IP_DNS2!
+if not "!IP_DHCP!"=="" echo   バックアップ時DHCP: !IP_DHCP!
+echo.
+
+:: --- 必須項目の検証
+if "!NIC!"=="" (
+    echo エラー: バックアップファイルに NIC 情報がありません。
+    goto :EOF
+)
+if "!IP_ADDR!"=="" (
+    echo エラー: バックアップファイルに IP アドレス情報がありません。
+    goto :EOF
+)
+if "!IP_MASK!"=="" (
+    echo エラー: バックアップファイルにサブネットマスク情報がありません。
+    goto :EOF
+)
+
+:: --- NIC の存在確認
+set "_NIC_FOUND=0"
+for /f "skip=2 tokens=1-3*" %%a in ('netsh interface show interface') do (
+    for /f "tokens=*" %%e in ("%%d") do (
+        if /i "%%e"=="!NIC!" set "_NIC_FOUND=1"
+    )
+)
+if "!_NIC_FOUND!"=="0" (
+    echo 警告: NIC "!NIC!" がこのシステムに存在しません。
+    echo 別の NIC に復元する場合は、バックアップファイルを手動で編集してください。
+    echo 場所: !CONFIG_FILE!
+    goto :EOF
+)
+
+:: --- 実行確認
+set "CONFIRM="
+set /p "CONFIRM=この設定で IP を復元しますか? [Y/N]: "
+if /i not "!CONFIRM!"=="Y" (
+    echo 復元をキャンセルしました。
+    goto :EOF
+)
+
+echo.
+echo 設定を適用中...
+
+:: --- 静的 IP アドレスを設定
+if "!IP_GW!"=="" (
+    netsh interface ipv4 set address name="!NIC!" static !IP_ADDR! !IP_MASK!
+) else (
+    netsh interface ipv4 set address name="!NIC!" static !IP_ADDR! !IP_MASK! !IP_GW!
+)
+
+:: --- DNS を設定
+if not "!IP_DNS1!"=="" (
+    netsh interface ipv4 set dns name="!NIC!" static !IP_DNS1!
+    if not "!IP_DNS2!"=="" (
+        netsh interface ipv4 add dns name="!NIC!" !IP_DNS2! index=2
+    )
+) else (
+    netsh interface ipv4 set dns name="!NIC!" none
+)
+
+echo.
+echo IP 設定を復元しました。^(手動 / 静的 IP として適用^)
 goto :EOF
