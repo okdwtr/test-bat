@@ -146,11 +146,112 @@ goto :EOF
 
 
 :: ============================================================
-:: 1. IP設定バックアップ  ※ feature/ip-backup で実装
+:: 1. IP設定バックアップ
+::   バッチファイルと同名の .cfg ファイルに現在の IP 設定を保存する
+::   出力ファイル: %SCRIPT_DIR%%SCRIPT_NAME%.cfg
 :: ============================================================
 :BACKUP_IP
 echo.
-echo [未実装] IP 設定バックアップ機能は feature/ip-backup で実装されます。
+echo ---- IP 設定バックアップ ----
+echo.
+
+set "TEMP_CFG=%TEMP%\ipmgr_cfg_%RANDOM%.tmp"
+set "TEMP_DNS=%TEMP%\ipmgr_dns_%RANDOM%.tmp"
+
+netsh interface ipv4 show config name="!SELECTED_NIC!" > "%TEMP_CFG%" 2>nul
+netsh interface ipv4 show dnsservers name="!SELECTED_NIC!" > "%TEMP_DNS%" 2>nul
+
+if not exist "%TEMP_CFG%" (
+    echo エラー: NIC "%SELECTED_NIC%" の設定を取得できませんでした。
+    goto :BACKUP_CLEANUP
+)
+
+:: --- DHCP 状態を取得
+::     netsh 出力の "DHCP" を含む行から DNS/WINS 以外の行を抽出し
+::     行末トークン (Yes / No / はい / いいえ) を取得する
+set "IP_DHCP="
+set "_DHCP_LINE="
+for /f "tokens=*" %%i in ('findstr /i "DHCP" "%TEMP_CFG%" ^| findstr /v /i "DNS\|WINS\|Server\|サーバー"') do (
+    set "_DHCP_LINE=%%i"
+)
+for %%j in (!_DHCP_LINE!) do set "IP_DHCP=%%j"
+
+:: --- IP アドレスを取得
+::     "/" を含まない行から IPv4 パターンに合致する最初のトークンを抽出
+set "IP_ADDR="
+for /f "tokens=*" %%i in ('findstr /v "/" "%TEMP_CFG%"') do (
+    if "!IP_ADDR!"=="" (
+        for %%j in (%%i) do (
+            if "!IP_ADDR!"=="" (
+                echo %%j | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul 2>&1
+                if not errorlevel 1 set "IP_ADDR=%%j"
+            )
+        )
+    )
+)
+
+:: --- サブネットマスクを取得
+::     "/" を含む行 (サブネットプレフィックス行) の末尾 IPv4 トークンを抽出
+::     例: "192.168.1.0/24 (mask 255.255.255.0)" → "255.255.255.0"
+set "IP_MASK="
+for /f "tokens=*" %%i in ('findstr "/" "%TEMP_CFG%"') do (
+    set "_PFXLINE=%%i"
+    set "_PFXLINE=!_PFXLINE:)=!"
+    set "_LAST="
+    for %%j in (!_PFXLINE!) do set "_LAST=%%j"
+    echo !_LAST! | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul 2>&1
+    if not errorlevel 1 set "IP_MASK=!_LAST!"
+)
+
+:: --- デフォルトゲートウェイを取得
+::     "Gateway" または "ゲートウェイ" を含む行のうち
+::     "Metric" / "メトリック" を含まない行から IPv4 トークンを抽出
+set "IP_GW="
+for /f "tokens=*" %%i in ('findstr /i "Gateway\|ゲートウェイ" "%TEMP_CFG%" ^| findstr /v /i "Metric\|メトリック"') do (
+    for %%j in (%%i) do (
+        echo %%j | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul 2>&1
+        if not errorlevel 1 set "IP_GW=%%j"
+    )
+)
+
+:: --- DNS サーバーを取得
+::     dnsservers 出力のうち行頭がスペース+数字で始まる行を IPv4 として抽出
+set "IP_DNS1="
+set "IP_DNS2="
+set "_DNS_COUNT=0"
+for /f "tokens=*" %%i in ('findstr /r "^[ 	]*[0-9]" "%TEMP_DNS%"') do (
+    echo %%i | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul 2>&1
+    if not errorlevel 1 (
+        set /a _DNS_COUNT+=1
+        if !_DNS_COUNT!==1 set "IP_DNS1=%%i"
+        if !_DNS_COUNT!==2 set "IP_DNS2=%%i"
+    )
+)
+
+:: --- バックアップファイルへ書き込み
+(
+    echo BACKUP_DATE=%DATE%
+    echo BACKUP_TIME=%TIME%
+    echo NIC=!SELECTED_NIC!
+    echo IP_ADDR=!IP_ADDR!
+    echo IP_MASK=!IP_MASK!
+    echo IP_GW=!IP_GW!
+    echo IP_DNS1=!IP_DNS1!
+    echo IP_DNS2=!IP_DNS2!
+    echo IP_DHCP=!IP_DHCP!
+) > "!CONFIG_FILE!"
+
+echo バックアップが完了しました。
+echo 保存先: !CONFIG_FILE!
+echo.
+echo バックアップ内容:
+echo ----------------------------------------
+type "!CONFIG_FILE!"
+echo ----------------------------------------
+
+:BACKUP_CLEANUP
+del "%TEMP_CFG%" >nul 2>&1
+del "%TEMP_DNS%" >nul 2>&1
 goto :EOF
 
 
