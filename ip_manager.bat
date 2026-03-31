@@ -155,11 +155,93 @@ goto :EOF
 
 
 :: ============================================================
-:: 2. IP設定変更  ※ feature/ip-change で実装
+:: 2. IP設定変更 (DHCP / 手動 切り替え)
+::   現在の設定を確認し、DHCP と手動 (静的 IP) を相互に切り替える。
+::   手動 → DHCP 切り替え時はバックアップを自動取得する。
 :: ============================================================
 :CHANGE_IP
 echo.
-echo [未実装] IP 設定変更機能は feature/ip-change で実装されます。
+echo ---- IP 設定変更 ----
+echo.
+
+:: --- 現在の DHCP 状態を取得
+set "TEMP_CHK=%TEMP%\ipmgr_chk_%RANDOM%.tmp"
+netsh interface ipv4 show config name="!SELECTED_NIC!" > "%TEMP_CHK%" 2>nul
+
+set "_DHCP_LINE="
+for /f "tokens=*" %%i in ('findstr /i "DHCP" "%TEMP_CHK%" ^| findstr /v /i "DNS\|WINS\|Server\|サーバー"') do (
+    set "_DHCP_LINE=%%i"
+)
+del "%TEMP_CHK%" >nul 2>&1
+
+set "_LAST_TOKEN="
+for %%j in (!_DHCP_LINE!) do set "_LAST_TOKEN=%%j"
+
+set "IS_DHCP=0"
+if /i "!_LAST_TOKEN!"=="Yes"  set "IS_DHCP=1"
+if   "!_LAST_TOKEN!"=="はい"  set "IS_DHCP=1"
+
+if "!IS_DHCP!"=="1" (
+    :: ----- DHCP → 手動 (静的 IP) -----
+    echo 現在の設定: DHCP ^(自動^)
+    echo.
+    echo 手動 ^(静的 IP^) に切り替えます。
+    echo.
+
+    set "NEW_IP="
+    set "NEW_MASK="
+    set "NEW_GW="
+    set "NEW_DNS1="
+    set "NEW_DNS2="
+
+    set /p "NEW_IP=  IP アドレス                            : "
+    set /p "NEW_MASK=  サブネットマスク                      : "
+    set /p "NEW_GW=  デフォルトゲートウェイ ^(空欄でスキップ^): "
+    set /p "NEW_DNS1=  プライマリ DNS ^(空欄でスキップ^)      : "
+    set /p "NEW_DNS2=  セカンダリ DNS ^(空欄でスキップ^)      : "
+
+    if "!NEW_IP!"=="" (
+        echo IP アドレスが入力されていません。キャンセルします。
+        goto :EOF
+    )
+    if "!NEW_MASK!"=="" (
+        echo サブネットマスクが入力されていません。キャンセルします。
+        goto :EOF
+    )
+
+    echo.
+    echo 設定を適用中...
+
+    if "!NEW_GW!"=="" (
+        netsh interface ipv4 set address name="!SELECTED_NIC!" static !NEW_IP! !NEW_MASK!
+    ) else (
+        netsh interface ipv4 set address name="!SELECTED_NIC!" static !NEW_IP! !NEW_MASK! !NEW_GW!
+    )
+
+    if not "!NEW_DNS1!"=="" (
+        netsh interface ipv4 set dns name="!SELECTED_NIC!" static !NEW_DNS1!
+        if not "!NEW_DNS2!"=="" (
+            netsh interface ipv4 add dns name="!SELECTED_NIC!" !NEW_DNS2! index=2
+        )
+    ) else (
+        netsh interface ipv4 set dns name="!SELECTED_NIC!" none
+    )
+
+    echo.
+    echo 手動 ^(静的 IP^) 設定に変更しました。
+) else (
+    :: ----- 手動 → DHCP (切り替え前にバックアップを自動取得) -----
+    echo 現在の設定: 手動 ^(静的 IP^)
+    echo.
+    echo DHCP に切り替える前に現在の設定をバックアップします...
+    call :BACKUP_IP
+    echo.
+    echo DHCP に切り替えています...
+    netsh interface ipv4 set address name="!SELECTED_NIC!" dhcp
+    netsh interface ipv4 set dns name="!SELECTED_NIC!" dhcp
+    echo.
+    echo DHCP ^(自動^) 設定に変更しました。
+)
 goto :EOF
 
 
