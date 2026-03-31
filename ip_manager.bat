@@ -102,7 +102,7 @@ echo.
 for /f "skip=2 tokens=1-3*" %%a in ('netsh interface show interface') do (
     if not "%%d"=="" (
         echo %%d | findstr /i "Loopback" >nul 2>&1
-        if errorlevel 1 (
+        if !errorlevel! neq 0 (
             set /a NIC_COUNT+=1
             for /f "tokens=*" %%e in ("%%d") do set "NIC_!NIC_COUNT!=%%e"
             for /f "tokens=*" %%e in ("%%d") do echo   !NIC_COUNT!. %%e
@@ -146,6 +146,25 @@ goto :EOF
 
 
 :: ============================================================
+:: [共通] DHCP 状態取得サブルーチン
+::   入力 : SELECTED_NIC または NIC (バックアップ復元時)
+::          TEMP_CHK に netsh show config 出力が格納されている
+::   出力 : IS_DHCP (1=DHCP有効 / 0=手動)
+:: ============================================================
+:GET_DHCP_STATUS
+set "_DHCP_LINE="
+for /f "tokens=*" %%i in ('findstr /i "DHCP" "%TEMP_CHK%" ^| findstr /v /i "DNS\|WINS\|Server\|サーバー"') do (
+    set "_DHCP_LINE=%%i"
+)
+set "_LAST_TOKEN="
+for %%j in (!_DHCP_LINE!) do set "_LAST_TOKEN=%%j"
+set "IS_DHCP=0"
+if /i "!_LAST_TOKEN!"=="Yes"  set "IS_DHCP=1"
+if   "!_LAST_TOKEN!"=="はい"  set "IS_DHCP=1"
+goto :EOF
+
+
+:: ============================================================
 :: 1. IP設定バックアップ
 ::   バッチファイルと同名の .cfg ファイルに現在の IP 設定を保存する
 ::   出力ファイル: %SCRIPT_DIR%%SCRIPT_NAME%.cfg
@@ -166,15 +185,10 @@ if not exist "%TEMP_CFG%" (
     goto :BACKUP_CLEANUP
 )
 
-:: --- DHCP 状態を取得
-::     netsh 出力の "DHCP" を含む行から DNS/WINS 以外の行を抽出し
-::     行末トークン (Yes / No / はい / いいえ) を取得する
-set "IP_DHCP="
-set "_DHCP_LINE="
-for /f "tokens=*" %%i in ('findstr /i "DHCP" "%TEMP_CFG%" ^| findstr /v /i "DNS\|WINS\|Server\|サーバー"') do (
-    set "_DHCP_LINE=%%i"
-)
-for %%j in (!_DHCP_LINE!) do set "IP_DHCP=%%j"
+:: --- DHCP 状態を取得 (共通サブルーチン使用)
+set "TEMP_CHK=%TEMP_CFG%"
+call :GET_DHCP_STATUS
+set "IP_DHCP=!_LAST_TOKEN!"
 
 :: --- IP アドレスを取得
 ::     "/" を含まない行から IPv4 パターンに合致する最初のトークンを抽出
@@ -215,17 +229,15 @@ for /f "tokens=*" %%i in ('findstr /i "Gateway\|ゲートウェイ" "%TEMP_CFG%"
 )
 
 :: --- DNS サーバーを取得
-::     dnsservers 出力のうち行頭がスペース+数字で始まる行を IPv4 として抽出
+::     dnsservers 出力から IPv4 パターンで始まる行を抽出
+::     for /f "tokens=*" がリーディングスペースを自動除去するため追加検証不要
 set "IP_DNS1="
 set "IP_DNS2="
 set "_DNS_COUNT=0"
-for /f "tokens=*" %%i in ('findstr /r "^[ 	]*[0-9]" "%TEMP_DNS%"') do (
-    echo %%i | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul 2>&1
-    if not errorlevel 1 (
-        set /a _DNS_COUNT+=1
-        if !_DNS_COUNT!==1 set "IP_DNS1=%%i"
-        if !_DNS_COUNT!==2 set "IP_DNS2=%%i"
-    )
+for /f "tokens=*" %%i in ('findstr /r "^[ 	]*[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" "%TEMP_DNS%"') do (
+    set /a _DNS_COUNT+=1
+    if !_DNS_COUNT!==1 set "IP_DNS1=%%i"
+    if !_DNS_COUNT!==2 set "IP_DNS2=%%i"
 )
 
 :: --- バックアップファイルへ書き込み
@@ -265,22 +277,11 @@ echo.
 echo ---- IP 設定変更 ----
 echo.
 
-:: --- 現在の DHCP 状態を取得
+:: --- 現在の DHCP 状態を取得 (共通サブルーチン使用)
 set "TEMP_CHK=%TEMP%\ipmgr_chk_%RANDOM%.tmp"
 netsh interface ipv4 show config name="!SELECTED_NIC!" > "%TEMP_CHK%" 2>nul
-
-set "_DHCP_LINE="
-for /f "tokens=*" %%i in ('findstr /i "DHCP" "%TEMP_CHK%" ^| findstr /v /i "DNS\|WINS\|Server\|サーバー"') do (
-    set "_DHCP_LINE=%%i"
-)
+call :GET_DHCP_STATUS
 del "%TEMP_CHK%" >nul 2>&1
-
-set "_LAST_TOKEN="
-for %%j in (!_DHCP_LINE!) do set "_LAST_TOKEN=%%j"
-
-set "IS_DHCP=0"
-if /i "!_LAST_TOKEN!"=="Yes"  set "IS_DHCP=1"
-if   "!_LAST_TOKEN!"=="はい"  set "IS_DHCP=1"
 
 if "!IS_DHCP!"=="1" (
     :: ----- DHCP → 手動 (静的 IP) -----
@@ -318,6 +319,11 @@ if "!IS_DHCP!"=="1" (
     ) else (
         netsh interface ipv4 set address name="!SELECTED_NIC!" static !NEW_IP! !NEW_MASK! !NEW_GW!
     )
+    if !errorlevel! neq 0 (
+        echo エラー: IP アドレスの設定に失敗しました。
+        echo 入力値とネットワーク設定を確認してください。
+        goto :EOF
+    )
 
     if not "!NEW_DNS1!"=="" (
         netsh interface ipv4 set dns name="!SELECTED_NIC!" static !NEW_DNS1!
@@ -340,6 +346,10 @@ if "!IS_DHCP!"=="1" (
     echo DHCP に切り替えています...
     netsh interface ipv4 set address name="!SELECTED_NIC!" dhcp
     netsh interface ipv4 set dns name="!SELECTED_NIC!" dhcp
+    if !errorlevel! neq 0 (
+        echo エラー: DHCP への切り替えに失敗しました。
+        goto :EOF
+    )
     echo.
     echo DHCP ^(自動^) 設定に変更しました。
 )
@@ -436,6 +446,11 @@ if "!IP_GW!"=="" (
     netsh interface ipv4 set address name="!NIC!" static !IP_ADDR! !IP_MASK!
 ) else (
     netsh interface ipv4 set address name="!NIC!" static !IP_ADDR! !IP_MASK! !IP_GW!
+)
+if %errorlevel% neq 0 (
+    echo エラー: IP アドレスの復元に失敗しました。
+    echo NIC が有効な状態か、設定値が正しいか確認してください。
+    goto :EOF
 )
 
 :: --- DNS を設定
